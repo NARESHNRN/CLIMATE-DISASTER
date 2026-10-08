@@ -1,0 +1,137 @@
+import { DatasetAdapter } from './datasetAdapter';
+import { AlertApiResponse, ApiResponse } from '../data/types';
+import { apiCache } from './cache';
+
+// In-memory store for newly posted alerts
+let customAlertsStore: AlertApiResponse[] = [];
+
+export class AlertService {
+  /**
+   * GET /api/alerts?location={location}
+   * Returns active disaster warning levels, clearly separating AI estimation from official agency notices.
+   */
+  public static async getAlerts(locationName?: string): Promise<ApiResponse<AlertApiResponse[]>> {
+    const meta = DatasetAdapter.resolveLocation(locationName);
+    const cacheKey = apiCache.buildKey('/api/alerts', meta.id);
+
+    const cached = apiCache.get<ApiResponse<AlertApiResponse[]>>(cacheKey);
+    if (cached) return { ...cached, cached: true };
+
+    const records = DatasetAdapter.getLocationRecords(meta.id);
+    const peakRec = records.reduce((prev, curr) => (curr.rainfall1d > prev.rainfall1d ? curr : prev), records[0]);
+
+    const generatedAlerts: AlertApiResponse[] = [];
+
+    // Flood Alert check
+    if (peakRec.rainfall1d > 35 || peakRec.rainfall7d > 140 || records.some((r) => r.floodLabel === 1)) {
+      generatedAlerts.push({
+        id: `ALT-FLD-${meta.id}-01`,
+        location: meta.name,
+        hazard: 'Flood',
+        status: peakRec.rainfall1d > 75 ? 'Critical' : 'Warning',
+        probability: Number((Math.min(0.95, (peakRec.rainfall1d / 100) * 0.6 + 0.35)).toFixed(2)),
+        message: `Elevated flood impact likelihood in low-lying sectors of ${meta.name} due to ${peakRec.rainfall1d.toFixed(1)}mm 24h precipitation pulse and high antecedent soil moisture.`,
+        timestamp: new Date().toISOString(),
+        sourceType: 'AI Prediction',
+        dataMode: 'live',
+        officialNoticeDisclaimer: 'AI DECISION-SUPPORT ESTIMATION: Not an official statutory civil defense order. Refer to State Disaster Management Authority bulletins for official advisories.',
+      });
+    }
+
+    // Drought Alert check
+    if (records.some((r) => r.droughtLabel === 1) || peakRec.rainfall30d < 120) {
+      generatedAlerts.push({
+        id: `ALT-DRO-${meta.id}-02`,
+        location: meta.name,
+        hazard: 'Drought',
+        status: records.some((r) => r.droughtLabel === 1) ? 'Advisory' : 'Watch',
+        probability: 0.76,
+        message: `Persistent soil moisture deficit and monsoon pause in ${meta.name}. Agricultural irrigation scheduling recommended.`,
+        timestamp: new Date().toISOString(),
+        sourceType: 'AI Prediction',
+        dataMode: 'demo',
+        officialNoticeDisclaimer: 'Agronomic decision-support guidance generated from multi-week soil moisture telemetry.',
+      });
+    }
+
+    // Heatwave Alert check
+    if (peakRec.temperatureMax > 33.5 || records.some((r) => r.heatLabel === 1)) {
+      generatedAlerts.push({
+        id: `ALT-HEA-${meta.id}-03`,
+        location: meta.name,
+        hazard: 'Heatwave',
+        status: peakRec.temperatureMax > 35 ? 'Warning' : 'Advisory',
+        probability: 0.68,
+        message: `Daytime maximum temperature elevated to ${peakRec.temperatureMax.toFixed(1)}°C. High thermal stress on outdoor workers.`,
+        timestamp: new Date().toISOString(),
+        sourceType: 'AI Prediction',
+        dataMode: 'demo',
+        officialNoticeDisclaimer: 'Public health thermal threshold indicator.',
+      });
+    }
+
+    // If no active hazards, provide nominal status
+    if (generatedAlerts.length === 0) {
+      generatedAlerts.push({
+        id: `ALT-NOM-${meta.id}-00`,
+        location: meta.name,
+        hazard: 'Compound',
+        status: 'Normal',
+        probability: 0.12,
+        message: `Hydrological and thermal parameters across ${meta.name} are within normal seasonal baselines.`,
+        timestamp: new Date().toISOString(),
+        sourceType: 'AI Prediction',
+        dataMode: 'demo',
+        officialNoticeDisclaimer: 'Standard continuous monitoring active.',
+      });
+    }
+
+    // Include any custom posted alerts for this location
+    const matchedCustom = customAlertsStore.filter(
+      (a) => a.location.toLowerCase() === meta.name.toLowerCase()
+    );
+
+    const allAlerts = [...matchedCustom, ...generatedAlerts];
+
+    const result: ApiResponse<AlertApiResponse[]> = {
+      success: true,
+      data: allAlerts,
+      dataMode: 'demo',
+      timestamp: new Date().toISOString(),
+    };
+
+    apiCache.set(cacheKey, result, 60);
+    return result;
+  }
+
+  /**
+   * POST /api/alerts
+   * Registers a test alert into the in-memory backend simulation store.
+   */
+  public static async createAlert(newAlert: Partial<AlertApiResponse>): Promise<ApiResponse<AlertApiResponse>> {
+    const alert: AlertApiResponse = {
+      id: `ALT-${Date.now().toString().slice(-4)}`,
+      location: newAlert.location || 'Chennai',
+      hazard: newAlert.hazard || 'Flood',
+      status: newAlert.status || 'Advisory',
+      probability: newAlert.probability ?? 0.75,
+      message: newAlert.message || 'Simulated alert entry generated by operator.',
+      timestamp: new Date().toISOString(),
+      sourceType: 'AI Prediction',
+      dataMode: 'demo',
+      officialNoticeDisclaimer: 'OPERATOR SIMULATION TEST: Not an official order.',
+    };
+
+    customAlertsStore.unshift(alert);
+
+    // Invalidate alert cache
+    apiCache.clear();
+
+    return {
+      success: true,
+      data: alert,
+      dataMode: 'demo',
+      timestamp: new Date().toISOString(),
+    };
+  }
+}

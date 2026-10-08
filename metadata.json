@@ -1,0 +1,8 @@
+{
+  "name": "ClimaRisk AI - Disaster Risk & Climate Resilience Platform",
+  "description": "Multi-hazard climate risk intelligence, ENSO telemetry, and early warning forecast system powered by real weather observations and climate datasets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
